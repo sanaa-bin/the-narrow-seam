@@ -1,0 +1,1137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Narrow Seam: Couture vs. Fast Fashion</title>
+
+<!--
+  =========================================================================
+  BRINKMANSHIP — a multiplayer negotiation simulation
+  =========================================================================
+  Two firms negotiate under the shadow of mutual disaster (a classic
+  Schelling-style "threat that leaves something to chance"):
+
+    LUXURY FASHION HOUSE  vs.  FAST-FASHION GIANT
+
+  Each round, both sides privately choose:
+    ESCALATE  — commit harder, raise the stakes, gamble on disaster
+    CONCEDE   — back down, take the loss, keep things safe
+    SIGNAL    — cheap-talk / partial commitment: reveal your resolve
+                without fully committing (a screening move)
+
+  A shared "disaster probability" ratchets up every time both sides
+  escalate at once, and can trigger a mutual catastrophe. Chance Cards
+  inject outside shocks (subsidies, scandals, boycotts) that a real
+  fashion-industry negotiation would face.
+
+  This file is a COMPLETE, SELF-CONTAINED web page. It works two ways:
+
+  1. LOCAL DEMO MODE (default, no setup): open the file directly and
+     play both seats yourself in one browser tab, to test the rules.
+
+  2. LIVE ONLINE MODE: fill in the FIREBASE_CONFIG object below with
+     your own free Firebase project's credentials. The exact same code
+     then synchronizes state through Firebase Realtime Database, so
+     players on different computers see the same scoreboard, timer,
+     and log update instantly. See the hosting walkthrough at the very
+     end of this file (and in the chat answer) for step-by-step setup.
+  =========================================================================
+-->
+
+<!-- Google Fonts: three deliberately different type roles.
+     - Display serif for the Luxury House (couture, editorial)
+     - Condensed grotesk for the Fast-Fashion Giant (warehouse signage, hazard labels)
+     - Monospace for the shared "trading floor" data: scores, timer, log -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,600;0,700;1,600&family=Oswald:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+<style>
+  /* =====================================================================
+     DESIGN TOKENS
+     A dark "exchange floor" base, split into two brand territories:
+     antique gold/noir for the Luxury House, hazard orange/yellow for
+     Fast Fashion. The center gauge is the signature element — a radial
+     dial that visualizes the disaster probability directly, since that
+     number is the actual heart of the simulation.
+     ===================================================================== */
+  :root {
+    --noir:        #121214;   /* base background */
+    --panel-dark:  #1a1a1e;
+    --hairline:    rgba(255,255,255,0.08);
+
+    --lux-ink:     #0f0f12;
+    --lux-gold:    #c9a961;
+    --lux-gold-dim:#8f7a4d;
+    --lux-ivory:   #ece6da;
+
+    --ff-orange:   #ff5a1f;
+    --ff-orange-dim:#a13d15;
+    --ff-yellow:   #ffd23f;
+    --ff-ink:      #1c1108;
+
+    --disaster-0:  #2e7d55;   /* calm */
+    --disaster-50: #d8a733;   /* rising */
+    --disaster-100:#d7263d;   /* critical */
+
+    --text-hi:     #f2efe8;
+    --text-lo:     #9a978f;
+
+    --font-display: 'Playfair Display', Georgia, serif;
+    --font-condensed: 'Oswald', 'Arial Narrow', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Courier New', monospace;
+
+    --radius: 6px;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    background: var(--noir);
+    color: var(--text-hi);
+    font-family: var(--font-mono);
+    min-height: 100vh;
+  }
+
+  ::selection { background: var(--lux-gold); color: var(--lux-ink); }
+
+  button {
+    font-family: var(--font-condensed);
+    cursor: pointer;
+    border: none;
+    border-radius: var(--radius);
+    letter-spacing: 0.04em;
+  }
+  button:focus-visible, input:focus-visible, select:focus-visible {
+    outline: 2px solid var(--lux-gold);
+    outline-offset: 2px;
+  }
+  input, select {
+    font-family: var(--font-mono);
+    background: var(--panel-dark);
+    color: var(--text-hi);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+    padding: 8px 10px;
+  }
+
+  /* ---------------------------------------------------------------------
+     TOP BAR
+     --------------------------------------------------------------------- */
+  header.app-bar {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 14px 22px;
+    border-bottom: 1px solid var(--hairline);
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  header.app-bar h1 {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 600;
+    font-size: 1.25rem;
+    margin: 0;
+    color: var(--lux-ivory);
+  }
+  header.app-bar h1 span { color: var(--ff-orange); font-style: normal; font-family: var(--font-condensed); }
+  #mode-badge {
+    font-family: var(--font-condensed);
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--hairline);
+    color: var(--text-lo);
+  }
+  #mode-badge.live { color: var(--disaster-0); border-color: var(--disaster-0); }
+  #room-tag { font-size: 0.75rem; color: var(--text-lo); }
+  #room-tag b { color: var(--lux-gold); letter-spacing: 0.1em; }
+
+  /* ---------------------------------------------------------------------
+     LOBBY SCREEN
+     --------------------------------------------------------------------- */
+  #lobby {
+    max-width: 560px;
+    margin: 8vh auto;
+    padding: 28px;
+    background: var(--panel-dark);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+  }
+  #lobby h2 {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 600;
+    margin-top: 0;
+  }
+  #lobby p { color: var(--text-lo); font-size: 0.9rem; line-height: 1.5; }
+  .field { margin-bottom: 14px; display: flex; flex-direction: column; gap: 6px; }
+  .field label {
+    font-family: var(--font-condensed);
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-lo);
+  }
+  .role-picker { display: flex; gap: 8px; }
+  .role-picker label {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 10px 6px;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+    font-size: 0.72rem;
+    cursor: pointer;
+    text-align: center;
+  }
+  .role-picker input { display: none; }
+  .role-picker input:checked + span { color: var(--noir); }
+  .role-picker label:has(input:checked) { background: var(--lux-gold); border-color: var(--lux-gold); }
+  .lobby-actions { display: flex; gap: 10px; margin-top: 18px; }
+  .btn-primary {
+    flex: 1;
+    padding: 12px;
+    background: var(--lux-gold);
+    color: var(--lux-ink);
+    font-weight: 600;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .btn-secondary {
+    flex: 1;
+    padding: 12px;
+    background: transparent;
+    border: 1px solid var(--ff-orange);
+    color: var(--ff-orange);
+    font-weight: 600;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  #lobby-error { color: var(--disaster-100); font-size: 0.8rem; min-height: 1.2em; }
+
+  /* ---------------------------------------------------------------------
+     GAME SCREEN LAYOUT
+     --------------------------------------------------------------------- */
+  #game { display: none; }
+  #game.active { display: block; }
+
+  .board {
+    display: grid;
+    grid-template-columns: 1fr minmax(260px, 340px) 1fr;
+    gap: 1px;
+    background: var(--hairline);
+    min-height: 62vh;
+  }
+  @media (max-width: 880px) {
+    .board { grid-template-columns: 1fr; }
+  }
+
+  .panel { background: var(--noir); padding: 22px; display: flex; flex-direction: column; }
+
+  /* Luxury panel: noir + gold, editorial serif */
+  .panel-lux {
+    background: linear-gradient(180deg, #17171b 0%, var(--noir) 60%);
+    border-top: 3px solid var(--lux-gold);
+  }
+  .panel-lux h2 {
+    font-family: var(--font-display);
+    font-style: italic;
+    color: var(--lux-ivory);
+    font-size: 1.4rem;
+    margin: 0 0 2px;
+  }
+
+  /* Fast-fashion panel: warehouse orange/yellow, condensed grotesk uppercase */
+  .panel-ff {
+    background: linear-gradient(180deg, #1c130a 0%, var(--noir) 60%);
+    border-top: 3px solid var(--ff-orange);
+  }
+  .panel-ff h2 {
+    font-family: var(--font-condensed);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--ff-yellow);
+    font-size: 1.4rem;
+    margin: 0 0 2px;
+  }
+
+  .panel .subtitle { color: var(--text-lo); font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 16px; }
+
+  .score-line { display: flex; align-items: baseline; gap: 10px; margin-bottom: 18px; }
+  .score-line .score { font-size: 2.4rem; font-weight: 700; }
+  .panel-lux .score { color: var(--lux-gold); }
+  .panel-ff .score { color: var(--ff-orange); }
+  .score-line .score-label { font-size: 0.7rem; color: var(--text-lo); text-transform: uppercase; letter-spacing: 0.08em; }
+
+  .move-buttons { display: flex; flex-direction: column; gap: 8px; margin-top: auto; }
+  .move-btn {
+    padding: 13px 14px;
+    font-size: 0.82rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    background: var(--panel-dark);
+    border: 1px solid var(--hairline);
+    color: var(--text-hi);
+    text-align: left;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .move-btn small { font-family: var(--font-mono); font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--text-lo); font-size: 0.68rem; }
+  .move-btn:hover:not(:disabled) { border-color: var(--lux-gold); }
+  .move-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .move-btn.selected { border-color: var(--lux-gold); background: rgba(201,169,97,0.12); }
+  .panel-ff .move-btn.selected { border-color: var(--ff-orange); background: rgba(255,90,31,0.12); }
+
+  .move-btn.escalate { border-left: 3px solid var(--disaster-100); }
+  .move-btn.signal   { border-left: 3px solid var(--disaster-50); }
+  .move-btn.concede  { border-left: 3px solid var(--disaster-0); }
+
+  .waiting-note { font-size: 0.72rem; color: var(--text-lo); margin-top: 8px; min-height: 1.4em; }
+
+  /* ---------------------------------------------------------------------
+     CENTER CONSOLE: round info + the disaster gauge (signature element)
+     --------------------------------------------------------------------- */
+  .panel-center {
+    align-items: center;
+    text-align: center;
+    background: #0e0e11;
+    justify-content: flex-start;
+    gap: 10px;
+  }
+  .round-tag { font-family: var(--font-condensed); letter-spacing: 0.12em; text-transform: uppercase; font-size: 0.78rem; color: var(--text-lo); }
+  .round-tag b { color: var(--text-hi); font-size: 1rem; }
+
+  #timer {
+    font-family: var(--font-mono);
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: var(--text-hi);
+    letter-spacing: 0.04em;
+  }
+  #timer.urgent { color: var(--disaster-100); }
+
+  /* The gauge: an SVG radial arc whose fill color/length track the
+     shared disaster probability. This is the one place the simulation's
+     core number (risk of mutual catastrophe) is made physically visible. */
+  .gauge-wrap { position: relative; width: 190px; height: 190px; margin: 6px 0; }
+  .gauge-wrap svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+  .gauge-track { fill: none; stroke: var(--hairline); stroke-width: 10; }
+  .gauge-fill { fill: none; stroke-width: 10; stroke-linecap: round; transition: stroke-dasharray 0.6s ease, stroke 0.6s ease; }
+  .gauge-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .gauge-center .pct { font-size: 1.7rem; font-weight: 700; }
+  .gauge-center .label { font-family: var(--font-condensed); font-size: 0.62rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-lo); max-width: 110px; line-height: 1.3; }
+
+  .chance-card {
+    width: 100%;
+    margin-top: 4px;
+    padding: 12px;
+    border: 1px dashed var(--lux-gold-dim);
+    border-radius: var(--radius);
+    background: rgba(201,169,97,0.06);
+    display: none;
+  }
+  .chance-card.visible { display: block; }
+  .chance-card .cc-title { font-family: var(--font-condensed); text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.72rem; color: var(--lux-gold); margin-bottom: 4px; }
+  .chance-card .cc-body { font-size: 0.76rem; color: var(--text-lo); line-height: 1.4; }
+
+  .observer-note { font-size: 0.68rem; color: var(--text-lo); border-top: 1px solid var(--hairline); padding-top: 10px; margin-top: 8px; width: 100%; }
+
+  /* ---------------------------------------------------------------------
+     LOG TICKER
+     --------------------------------------------------------------------- */
+  #log-wrap { border-top: 1px solid var(--hairline); background: #0a0a0c; }
+  #log-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 22px; font-family: var(--font-condensed); font-size: 0.68rem;
+    letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-lo);
+  }
+  #log {
+    max-height: 160px; overflow-y: auto;
+    padding: 0 22px 14px;
+    font-size: 0.78rem;
+    line-height: 1.9;
+  }
+  #log .entry { border-bottom: 1px solid var(--hairline); padding: 4px 0; }
+  #log .entry .r { color: var(--lux-gold); margin-right: 8px; }
+  #log .entry.disaster { color: var(--disaster-100); }
+  #log .entry.chance { color: var(--ff-yellow); }
+
+  /* ---------------------------------------------------------------------
+     PEOPLE STRIP + FINAL RESULTS
+     --------------------------------------------------------------------- */
+  #people-strip {
+    display: flex; gap: 16px; flex-wrap: wrap;
+    padding: 10px 22px; border-top: 1px solid var(--hairline);
+    font-size: 0.7rem; color: var(--text-lo);
+  }
+  #people-strip .p { display: flex; align-items: center; gap: 6px; }
+  #people-strip .dot { width: 7px; height: 7px; border-radius: 50%; }
+
+  #results {
+    display: none;
+    max-width: 480px;
+    margin: 10vh auto;
+    padding: 26px;
+    background: var(--panel-dark);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+    text-align: center;
+  }
+  #results.visible { display: block; }
+  #results h2 { font-family: var(--font-display); font-style: italic; }
+  #results .verdict { font-family: var(--font-condensed); text-transform: uppercase; letter-spacing: 0.08em; color: var(--lux-gold); margin-bottom: 12px; }
+
+  .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+</style>
+</head>
+<body>
+
+<header class="app-bar">
+  <h1>The Narrow Seam<span>::couture vs. fast fashion</span></h1>
+  <div style="display:flex; align-items:center; gap:10px;">
+    <span id="room-tag"></span>
+    <span id="mode-badge">local demo mode</span>
+  </div>
+</header>
+
+<!-- =====================================================================
+     LOBBY: create or join a room, pick a name and a seat.
+     ===================================================================== -->
+<section id="lobby">
+  <h2>Enter the negotiation</h2>
+  <p>
+    Create a new room and share the room code, or join one a friend already
+    started. Two seats can play (Luxury House / Fast-Fashion Giant); anyone
+    else who joins becomes a non-acting Regulator/Observer who watches the
+    board and log in real time.
+  </p>
+
+  <div class="field">
+    <label for="name-input">Your name</label>
+    <input id="name-input" type="text" maxlength="24" placeholder="e.g. Elena">
+  </div>
+
+  <div class="field">
+    <label>Preferred seat</label>
+    <div class="role-picker">
+      <label><input type="radio" name="role" value="lux" checked><span>Luxury House</span></label>
+      <label><input type="radio" name="role" value="ff"><span>Fast-Fashion Giant</span></label>
+      <label><input type="radio" name="role" value="observer"><span>Observer</span></label>
+    </div>
+  </div>
+
+  <div class="field">
+    <label for="room-input">Room code (leave blank to create a new room)</label>
+    <input id="room-input" type="text" maxlength="8" placeholder="e.g. TWEED42" style="text-transform:uppercase;">
+  </div>
+
+  <div class="field">
+    <label for="rounds-input">Rounds (only used when creating a new room)</label>
+    <select id="rounds-input">
+      <option value="5">5 rounds</option>
+      <option value="6" selected>6 rounds</option>
+      <option value="8">8 rounds</option>
+      <option value="10">10 rounds</option>
+    </select>
+  </div>
+
+  <div id="lobby-error"></div>
+
+  <div class="lobby-actions">
+    <button class="btn-primary" id="btn-join">Join / create room</button>
+    <button class="btn-secondary" id="btn-local">Skip online — play solo demo</button>
+  </div>
+</section>
+
+<!-- =====================================================================
+     GAME SCREEN
+     ===================================================================== -->
+<section id="game">
+  <div class="board">
+
+    <!-- LUXURY FASHION HOUSE panel -->
+    <div class="panel panel-lux">
+      <h2>Maison Aurélie</h2>
+      <div class="subtitle">Luxury Fashion House</div>
+      <div class="score-line">
+        <span class="score" id="score-lux">0</span>
+        <span class="score-label">reputation<br>points</span>
+      </div>
+      <div class="move-buttons" id="moves-lux">
+        <button class="move-btn escalate" data-role="lux" data-move="Escalate">Escalate <small>raise stakes · risk disaster</small></button>
+        <button class="move-btn signal" data-role="lux" data-move="Signal">Signal <small>cheap talk · reveal resolve</small></button>
+        <button class="move-btn concede" data-role="lux" data-move="Concede">Concede <small>back down · stay safe</small></button>
+      </div>
+      <div class="waiting-note" id="wait-lux"></div>
+    </div>
+
+    <!-- CENTER: round, timer, disaster gauge, chance card -->
+    <div class="panel panel-center">
+      <div class="round-tag">Round <b id="round-no">1</b> of <b id="round-total">6</b></div>
+      <div id="timer">00:30</div>
+
+      <div class="gauge-wrap">
+        <svg viewBox="0 0 120 120">
+          <circle class="gauge-track" cx="60" cy="60" r="50"></circle>
+          <circle class="gauge-fill" id="gauge-fill" cx="60" cy="60" r="50"
+                   stroke="#2e7d55" stroke-dasharray="0 314"></circle>
+        </svg>
+        <div class="gauge-center">
+          <div class="pct" id="gauge-pct">10%</div>
+          <div class="label">probability of<br>mutual disaster</div>
+        </div>
+      </div>
+
+      <div class="chance-card" id="chance-card">
+        <div class="cc-title">Chance Card</div>
+        <div class="cc-body" id="chance-card-body"></div>
+      </div>
+
+      <div class="observer-note" id="observer-note" style="display:none;">
+        You are observing as Regulator. You can see every move once both
+        sides commit, but cannot act.
+      </div>
+    </div>
+
+    <!-- FAST-FASHION GIANT panel -->
+    <div class="panel panel-ff">
+      <h2>VELOX GROUP</h2>
+      <div class="subtitle">Fast-Fashion Giant</div>
+      <div class="score-line">
+        <span class="score" id="score-ff">0</span>
+        <span class="score-label">reputation<br>points</span>
+      </div>
+      <div class="move-buttons" id="moves-ff">
+        <button class="move-btn escalate" data-role="ff" data-move="Escalate">ESCALATE <small>raise stakes · risk disaster</small></button>
+        <button class="move-btn signal" data-role="ff" data-move="Signal">SIGNAL <small>cheap talk · reveal resolve</small></button>
+        <button class="move-btn concede" data-role="ff" data-move="Concede">CONCEDE <small>back down · stay safe</small></button>
+      </div>
+      <div class="waiting-note" id="wait-ff"></div>
+    </div>
+  </div>
+
+  <div id="people-strip"></div>
+
+  <div id="log-wrap">
+    <div id="log-header"><span>Negotiation log</span><span id="log-count"></span></div>
+    <div id="log"></div>
+  </div>
+</section>
+
+<section id="results">
+  <h2>Final settlement</h2>
+  <div class="verdict" id="results-verdict"></div>
+  <p id="results-detail" style="color:var(--text-lo); font-size:0.85rem; line-height:1.6;"></p>
+  <button class="btn-primary" id="btn-again" style="margin-top:10px;">Return to lobby</button>
+</section>
+
+<script>
+/* =========================================================================
+   1. FIREBASE CONFIG
+   -------------------------------------------------------------------------
+   Leave this untouched to play in LOCAL DEMO MODE (single tab/browser,
+   no network needed — good for testing the rules).
+
+   To go live online, create a free Firebase project (steps in the hosting
+   guide at the bottom of this file) and paste your project's own web-app
+   config here. As soon as apiKey is no longer the placeholder string, the
+   game automatically switches to real-time online mode.
+   ========================================================================= */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyA3C-ttt-ZcSVTOiZZ9yAkLU6hxUffBaYw",
+  authDomain: "the-narrow-seam.firebaseapp.com",
+  databaseURL: "https://the-narrow-seam-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "the-narrow-seam",
+};
+const FIREBASE_IS_CONFIGURED = FIREBASE_CONFIG.apiKey !== "YOUR_API_KEY";
+
+/* =========================================================================
+   2. GAME RULES — the brinkmanship model
+   -------------------------------------------------------------------------
+   This is the pure "physics" of the simulation: given two moves and the
+   current disaster probability, what happens? Kept as plain functions with
+   no DOM/network code so the logic is easy to read, test, or rebalance.
+   ========================================================================= */
+
+// Chance Cards: random outside shocks. Each has a short effect(state)
+// function that mutates a working copy of {scoreLux, scoreFF, disasterProb}.
+const CHANCE_CARDS = [
+  {
+    name: "Influencer Scandal",
+    body: "A megainfluencer is caught wearing a counterfeit — backlash splashes onto both brands' feeds.",
+    effect: (s) => { s.scoreLux -= 4; s.scoreFF -= 4; }
+  },
+  {
+    name: "Government Textile Subsidy",
+    body: "New state subsidies favor high-volume domestic manufacturing.",
+    effect: (s) => { s.scoreFF += 8; }
+  },
+  {
+    name: "Consumer Boycott Call",
+    body: "A viral boycott campaign targets whichever brand looks most stubborn right now.",
+    effect: (s) => { s.disasterProb = Math.min(100, s.disasterProb + 6); }
+  },
+  {
+    name: "Heritage Craftsmanship Award",
+    body: "An industry body publicly honors artisanal, small-batch production.",
+    effect: (s) => { s.scoreLux += 7; }
+  },
+  {
+    name: "Supply Chain Leak",
+    body: "Leaked documents reveal labor conditions at a major supplier.",
+    effect: (s) => { s.scoreFF -= 10; s.disasterProb = Math.min(100, s.disasterProb + 5); }
+  },
+  {
+    name: "Viral Trend Cycle",
+    body: "A trend cycle on short-video platforms sends demand for fast, cheap pieces soaring.",
+    effect: (s) => { s.scoreFF += 6; }
+  },
+  {
+    name: "Counterfeit Crackdown",
+    body: "Customs seize a record volume of counterfeit luxury goods, reinforcing the value of the real thing.",
+    effect: (s) => { s.scoreLux += 6; }
+  },
+  {
+    name: "Trade Tariff Announcement",
+    body: "New import tariffs raise costs across the whole industry — nobody is spared.",
+    effect: (s) => { s.scoreLux -= 3; s.scoreFF -= 3; s.disasterProb = Math.min(100, s.disasterProb + 4); }
+  },
+];
+
+function drawChanceCard(rng) {
+  return CHANCE_CARDS[Math.floor(rng() * CHANCE_CARDS.length)];
+}
+
+// Core payoff table for the three moves. This is the brinkmanship engine:
+// - ESCALATE/ESCALATE is the only cell where disaster can actually fire,
+//   and the odds of it firing are read from the room's current
+//   disasterProb, which itself climbs every time both sides escalate
+//   ("a threat that leaves something to chance" ratchets up over time).
+// - SIGNAL is a screening move: cheaper than Escalate, and rewarded when
+//   it successfully changes the opponent's behavior (they Concede), but
+//   punished if the opponent calls the bluff by Escalating anyway.
+function resolveRound(moveLux, moveFF, disasterProb, rng) {
+  const out = {
+    scoreLux: 0, scoreFF: 0,
+    disasterProbDelta: 0,
+    disasterOccurred: false,
+    summary: "",
+  };
+
+  const pair = moveLux + "/" + moveFF;
+
+  if (pair === "Escalate/Escalate") {
+    const roll = rng(); // 0..1
+    if (roll < disasterProb / 100) {
+      out.disasterOccurred = true;
+      out.scoreLux -= 30; out.scoreFF -= 30;
+      out.disasterProbDelta = -40; // disaster clears the air; tension resets low
+      out.summary = "Both sides escalate — this time the brink gives way. Mutual disaster.";
+    } else {
+      out.scoreLux += 5; out.scoreFF += 5; // toughness pays off, for now
+      out.disasterProbDelta = +15; // but the stakes are now higher next round
+      out.summary = "Both sides escalate and neither blinks. Disaster is dodged — barely.";
+    }
+  } else if (pair === "Concede/Concede") {
+    out.scoreLux += 2; out.scoreFF += 2;
+    out.disasterProbDelta = -10;
+    out.summary = "Both sides quietly stand down. A dull but stable round.";
+  } else if (pair === "Escalate/Concede") {
+    out.scoreLux += 15; out.scoreFF -= 10;
+    out.disasterProbDelta = -5;
+    out.summary = "Maison Aurélie presses the advantage; Velox Group backs off.";
+  } else if (pair === "Concede/Escalate") {
+    out.scoreFF += 15; out.scoreLux -= 10;
+    out.disasterProbDelta = -5;
+    out.summary = "Velox Group presses the advantage; Maison Aurélie backs off.";
+  } else if (pair === "Signal/Signal") {
+    out.scoreLux += 1; out.scoreFF += 1;
+    out.disasterProbDelta = -8;
+    out.summary = "Both sides signal resolve without committing — an uneasy, informative standoff.";
+  } else if (pair === "Signal/Concede") {
+    out.scoreLux += 8; out.scoreFF -= 5;
+    out.disasterProbDelta = -3;
+    out.summary = "Maison Aurélie's signal lands — Velox Group reads it and yields.";
+  } else if (pair === "Concede/Signal") {
+    out.scoreFF += 8; out.scoreLux -= 5;
+    out.disasterProbDelta = -3;
+    out.summary = "Velox Group's signal lands — Maison Aurélie reads it and yields.";
+  } else if (pair === "Signal/Escalate") {
+    out.scoreLux -= 3; out.scoreFF += 4;
+    out.disasterProbDelta = +6;
+    out.summary = "Velox Group calls Maison Aurélie's bluff and escalates past it.";
+  } else if (pair === "Escalate/Signal") {
+    out.scoreFF -= 3; out.scoreLux += 4;
+    out.disasterProbDelta = +6;
+    out.summary = "Maison Aurélie calls Velox Group's bluff and escalates past it.";
+  }
+
+  return out;
+}
+
+/* =========================================================================
+   3. BACKEND ABSTRACTION
+   -------------------------------------------------------------------------
+   Everything above is pure game logic. Everything below talks to "the
+   room" through one small interface: init / patch / onChange. Two
+   implementations satisfy that interface — pick whichever is active based
+   on FIREBASE_IS_CONFIGURED. The rest of the app never needs to know
+   which one it's talking to.
+   ========================================================================= */
+
+let backend = null; // assigned in initBackend()
+
+function makeLocalBackend() {
+  // In-memory single-tab backend: good for testing the rules solo.
+  // "Random" is still seeded per-room so behavior is reproducible if
+  // you want to debug a specific sequence.
+  let state = null;
+  let listeners = [];
+  return {
+    kind: "local",
+    async createRoom(code, initial) { state = initial; notify(); return code; },
+    async joinRoom(code, playerObj) {
+      if (!state) throw new Error("Room not found in local demo mode.");
+      state.players[playerObj.uid] = playerObj;
+      notify();
+    },
+    async patch(partial) {
+      state = deepMerge(state, partial);
+      notify();
+    },
+    onChange(cb) { listeners.push(cb); if (state) cb(state); },
+    rng: mulberry32(Date.now() % 2147483647),
+  };
+  function notify() { listeners.forEach(cb => cb(state)); }
+}
+
+async function makeFirebaseBackend() {
+  // Loaded only when a real config is provided, via Firebase's official
+  // CDN as ES modules — no build step required.
+  const appMod = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js");
+  const dbMod  = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js");
+  const app = appMod.initializeApp(FIREBASE_CONFIG);
+  const db = dbMod.getDatabase(app);
+
+  let roomRef = null;
+
+  return {
+    kind: "firebase",
+    async createRoom(code, initial) {
+      roomRef = dbMod.ref(db, "rooms/" + code);
+      await dbMod.set(roomRef, initial);
+      return code;
+    },
+    async joinRoom(code, playerObj) {
+      roomRef = dbMod.ref(db, "rooms/" + code);
+      const snap = await dbMod.get(roomRef);
+      if (!snap.exists()) throw new Error("No room found with that code.");
+      await dbMod.set(dbMod.ref(db, `rooms/${code}/players/${playerObj.uid}`), playerObj);
+    },
+    // patch() merges a partial object into the room. For the two fields
+    // that both players might touch in the same instant (round resolution)
+    // we use a transaction so only one client's resolution actually wins,
+    // even if both players' clients notice "both moves are in" at once.
+    async patch(partial, opts) {
+      if (opts && opts.transactional) {
+        await dbMod.runTransaction(roomRef, (current) => {
+          if (!current) return current;
+          if (opts.guard && !opts.guard(current)) return; // abort: already resolved
+          return deepMerge(current, partial);
+        });
+      } else {
+        const updates = {};
+        flatten(partial, "", updates);
+        await dbMod.update(roomRef, updates);
+      }
+    },
+    onChange(cb) {
+      dbMod.onValue(roomRef, (snap) => cb(snap.val()));
+    },
+    rng: Math.random, // fine for a casual game; each client draws its own
+                       // card/roll only when it is the one performing the
+                       // (transactional) resolution, so results still stay
+                       // consistent for everyone once written back.
+  };
+}
+
+function flatten(obj, prefix, out) {
+  for (const k in obj) {
+    const path = prefix ? prefix + "/" + k : k;
+    if (obj[k] && typeof obj[k] === "object" && !Array.isArray(obj[k])) {
+      flatten(obj[k], path, out);
+    } else {
+      out[path] = obj[k];
+    }
+  }
+  return out;
+}
+function deepMerge(base, patch) {
+  const result = Array.isArray(base) ? base.slice() : { ...(base || {}) };
+  for (const k in patch) {
+    if (patch[k] && typeof patch[k] === "object" && !Array.isArray(patch[k])) {
+      result[k] = deepMerge(result[k] || {}, patch[k]);
+    } else {
+      result[k] = patch[k];
+    }
+  }
+  return result;
+}
+function mulberry32(seed) {
+  return function () {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/* =========================================================================
+   4. APP STATE + WIRING
+   ========================================================================= */
+const ROUND_SECONDS = 30;
+const uid = "p_" + Math.random().toString(36).slice(2, 10); // per-tab identity;
+// intentionally kept in memory only (not persisted) — each browser tab is
+// one player for the duration of a game, which is all a live match needs.
+
+let myRole = null;     // 'lux' | 'ff' | 'observer'
+let myName = null;
+let roomCode = null;
+let latestState = null;
+let timerInterval = null;
+let resolvedRoundsSeen = new Set();
+
+const $ = (sel) => document.querySelector(sel);
+
+async function initBackend() {
+  backend = FIREBASE_IS_CONFIGURED ? await makeFirebaseBackend() : makeLocalBackend();
+  const badge = $("#mode-badge");
+  if (backend.kind === "firebase") {
+    badge.textContent = "live online";
+    badge.classList.add("live");
+  } else {
+    badge.textContent = "local demo mode";
+  }
+}
+
+function freshState(rounds) {
+  return {
+    round: 1,
+    roundTotal: rounds,
+    status: "playing",           // playing | resolving | finished
+    timerEnd: Date.now() + ROUND_SECONDS * 1000,
+    disasterProb: 10,
+    scoreLux: 0,
+    scoreFF: 0,
+    moves: {},                   // moves["round_1"] = { lux: "Escalate", ff: "Concede" }
+    chanceCard: null,
+    log: [{ text: "Negotiation opens. Round 1 begins.", type: "info", ts: Date.now() }],
+    players: {},
+  };
+}
+
+async function handleJoin() {
+  const err = $("#lobby-error");
+  err.textContent = "";
+  myName = ($("#name-input").value || "Anonymous").trim().slice(0, 24);
+  myRole = document.querySelector('input[name="role"]:checked').value;
+  const roundsWanted = parseInt($("#rounds-input").value, 10);
+  let code = ($("#room-input").value || "").trim().toUpperCase();
+
+  await initBackend();
+
+  try {
+    if (!code) {
+      code = Math.random().toString(36).slice(2, 8).toUpperCase();
+      await backend.createRoom(code, freshState(roundsWanted));
+    }
+    await backend.joinRoom(code, { uid, name: myName, role: myRole, joinedAt: Date.now() });
+    roomCode = code;
+    enterGame();
+  } catch (e) {
+    err.textContent = e.message || "Could not join that room.";
+  }
+}
+
+function handleLocalSolo() {
+  myName = ($("#name-input").value || "You").trim().slice(0, 24) || "You";
+  myRole = "both"; // special local-only role: control both seats yourself
+  roomCode = "LOCAL";
+  initBackend().then(async () => {
+    await backend.createRoom(roomCode, freshState(parseInt($("#rounds-input").value, 10)));
+    await backend.joinRoom(roomCode, { uid, name: myName, role: "both", joinedAt: Date.now() });
+    enterGame();
+  });
+}
+
+function enterGame() {
+  $("#lobby").style.display = "none";
+  $("#game").classList.add("active");
+  $("#room-tag").innerHTML = roomCode === "LOCAL" ? "" : `room <b>${roomCode}</b>`;
+  if (myRole === "observer") $("#observer-note").style.display = "block";
+
+  backend.onChange(onRoomState);
+
+  document.querySelectorAll(".move-btn").forEach(btn => {
+    btn.addEventListener("click", () => onMoveClick(btn.dataset.role, btn.dataset.move));
+  });
+}
+
+// Buttons are only clickable for the seat(s) you actually control.
+function canControl(seatRole) {
+  return myRole === seatRole || myRole === "both";
+}
+
+async function onMoveClick(seatRole, move) {
+  if (!canControl(seatRole)) return;
+  if (!latestState || latestState.status !== "playing") return;
+  const roundKey = "round_" + latestState.round;
+  const existing = (latestState.moves && latestState.moves[roundKey]) || {};
+  if (existing[seatRole]) return; // already locked in
+
+  await backend.patch({ moves: { [roundKey]: { [seatRole]: move } } });
+  maybeResolve();
+}
+
+// Called after every state change; if both seats have moved for the
+// current round and nobody has resolved it yet, one client "claims" the
+// resolution via a transaction guard so it only happens once even with
+// two players clicking near-simultaneously.
+async function maybeResolve() {
+  const s = latestState;
+  if (!s || s.status !== "playing") return;
+  const roundKey = "round_" + s.round;
+  const m = (s.moves && s.moves[roundKey]) || {};
+  if (!m.lux || !m.ff) return;
+
+  const rng = backend.rng;
+  const result = resolveRound(m.lux, m.ff, s.disasterProb, rng);
+  const nextProb = Math.max(0, Math.min(100, s.disasterProb + result.disasterProbDelta));
+
+  const isLastRound = s.round >= s.roundTotal || result.disasterOccurred;
+  const nextRound = s.round + 1;
+  const nextCard = isLastRound ? null : drawChanceCard(rng);
+  let cardScoreLux = 0, cardScoreFF = 0, cardProbAfter = nextProb;
+  if (nextCard) {
+    const working = { scoreLux: 0, scoreFF: 0, disasterProb: nextProb };
+    nextCard.effect(working);
+    cardScoreLux = working.scoreLux; cardScoreFF = working.scoreFF; cardProbAfter = working.disasterProb;
+  }
+
+  const newLogEntries = [
+    { text: `Round ${s.round}: Luxury House ${m.lux}, Fast-Fashion Giant ${m.ff}. ${result.summary}`,
+      type: result.disasterOccurred ? "disaster" : "info", ts: Date.now() },
+  ];
+  if (nextCard) {
+    newLogEntries.push({ text: `Chance Card — ${nextCard.name}: ${nextCard.body}`, type: "chance", ts: Date.now() + 1 });
+  }
+
+  const patch = {
+    status: isLastRound ? "finished" : "playing",
+    scoreLux: s.scoreLux + result.scoreLux + cardScoreLux,
+    scoreFF: s.scoreFF + result.scoreFF + cardScoreFF,
+    disasterProb: cardProbAfter,
+    round: isLastRound ? s.round : nextRound,
+    chanceCard: nextCard,
+    timerEnd: Date.now() + ROUND_SECONDS * 1000,
+    log: [...s.log, ...newLogEntries],
+  };
+
+  // Transactional write with a guard: only apply if this round hasn't
+  // already been resolved by the other client in the meantime.
+  await backend.patch(patch, {
+    transactional: true,
+    guard: (current) => {
+      const curRoundKey = "round_" + current.round;
+      const curMoves = (current.moves && current.moves[curRoundKey]) || {};
+      return current.status === "playing" && curMoves.lux && curMoves.ff && current.round === s.round;
+    },
+  });
+}
+
+/* -------------------------------------------------------------------------
+   Rendering: pure function of the latest room state. Runs every time the
+   backend reports a change (that's what makes the scoreboard "live" for
+   every connected player without anyone hitting refresh).
+   ------------------------------------------------------------------------- */
+function onRoomState(state) {
+  if (!state) return;
+  latestState = state;
+
+  $("#score-lux").textContent = state.scoreLux;
+  $("#score-ff").textContent = state.scoreFF;
+  $("#round-no").textContent = Math.min(state.round, state.roundTotal);
+  $("#round-total").textContent = state.roundTotal;
+
+  renderGauge(state.disasterProb);
+  renderChanceCard(state.chanceCard);
+  renderMoves(state);
+  renderPeople(state.players || {});
+  renderLog(state.log || []);
+  renderTimer(state);
+
+  if (state.status === "finished") showResults(state);
+
+  // A second player's move might already be sitting in the DB waiting on
+  // this client to notice and trigger resolution.
+  maybeResolve();
+}
+
+function renderGauge(prob) {
+  const circumference = 2 * Math.PI * 50;
+  const fillLen = (prob / 100) * circumference;
+  const fill = $("#gauge-fill");
+  fill.setAttribute("stroke-dasharray", `${fillLen} ${circumference}`);
+  const color = prob < 34 ? "var(--disaster-0)" : prob < 67 ? "var(--disaster-50)" : "var(--disaster-100)";
+  fill.style.stroke = getComputedStyle(document.documentElement).getPropertyValue(
+    prob < 34 ? "--disaster-0" : prob < 67 ? "--disaster-50" : "--disaster-100"
+  );
+  $("#gauge-pct").textContent = Math.round(prob) + "%";
+  $("#gauge-pct").style.color = fill.style.stroke;
+}
+
+function renderChanceCard(card) {
+  const wrap = $("#chance-card");
+  if (!card) { wrap.classList.remove("visible"); return; }
+  wrap.classList.add("visible");
+  $("#chance-card-body").textContent = "";
+  $("#chance-card-body").innerHTML = `<strong>${escapeHtml(card.name)}</strong><br>${escapeHtml(card.body)}`;
+}
+
+function renderMoves(state) {
+  const roundKey = "round_" + state.round;
+  const m = (state.moves && state.moves[roundKey]) || {};
+  ["lux", "ff"].forEach(seat => {
+    const wrap = $(seat === "lux" ? "#moves-lux" : "#moves-ff");
+    const waitNote = $(seat === "lux" ? "#wait-lux" : "#wait-ff");
+    const mine = canControl(seat);
+    const locked = !!m[seat];
+    const gameOver = state.status !== "playing";
+
+    wrap.querySelectorAll(".move-btn").forEach(btn => {
+      btn.disabled = !mine || locked || gameOver;
+      btn.classList.toggle("selected", m[seat] === btn.dataset.move);
+    });
+
+    if (gameOver) { waitNote.textContent = ""; return; }
+    if (!mine) { waitNote.textContent = locked ? `${seat === "lux" ? "Luxury House" : "Fast-Fashion Giant"} has moved.` : "Waiting for their move…"; return; }
+    waitNote.textContent = locked ? "Locked in — waiting on the other side." : "Choose a move for this round.";
+  });
+}
+
+function renderPeople(players) {
+  const strip = $("#people-strip");
+  const list = Object.values(players);
+  const colorFor = (role) => role === "lux" ? "var(--lux-gold)" : role === "ff" ? "var(--ff-orange)" : "var(--text-lo)";
+  strip.innerHTML = list.map(p =>
+    `<span class="p"><span class="dot" style="background:${colorFor(p.role)}"></span>${escapeHtml(p.name)} · ${roleLabel(p.role)}</span>`
+  ).join("");
+}
+function roleLabel(role) {
+  return role === "lux" ? "Luxury House" : role === "ff" ? "Fast-Fashion Giant" : role === "both" ? "Solo (both seats)" : "Observer";
+}
+
+function renderLog(log) {
+  const el = $("#log");
+  el.innerHTML = log.slice().reverse().map((entry, i) => {
+    const roundGuess = "";
+    return `<div class="entry ${entry.type}">${escapeHtml(entry.text)}</div>`;
+  }).join("");
+  $("#log-count").textContent = log.length + " entries";
+}
+
+function renderTimer(state) {
+  clearInterval(timerInterval);
+  if (state.status !== "playing") { $("#timer").textContent = "--:--"; return; }
+  const tick = () => {
+    const remaining = Math.max(0, Math.round((state.timerEnd - Date.now()) / 1000));
+    const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
+    const ss = String(remaining % 60).padStart(2, "0");
+    const timerEl = $("#timer");
+    timerEl.textContent = `${mm}:${ss}`;
+    timerEl.classList.toggle("urgent", remaining <= 10);
+    if (remaining <= 0) {
+      clearInterval(timerInterval);
+      autoSubmitOnTimeout(state);
+    }
+  };
+  tick();
+  timerInterval = setInterval(tick, 500);
+}
+
+// If time runs out and a seat you personally control hasn't moved yet,
+// that seat auto-submits Concede — never the opponent's seat, so both
+// clients only ever write their own player's move.
+async function autoSubmitOnTimeout(state) {
+  const roundKey = "round_" + state.round;
+  const m = (state.moves && state.moves[roundKey]) || {};
+  for (const seat of ["lux", "ff"]) {
+    if (canControl(seat) && !m[seat]) {
+      await backend.patch({ moves: { [roundKey]: { [seat]: "Concede" } } });
+    }
+  }
+  maybeResolve();
+}
+
+function showResults(state) {
+  $("#game").classList.remove("active");
+  $("#results").classList.add("visible");
+  const diff = state.scoreLux - state.scoreFF;
+  let verdict;
+  if (Math.abs(diff) < 5) verdict = "A near-total stalemate.";
+  else if (diff > 0) verdict = "Maison Aurélie holds the upper hand.";
+  else verdict = "Velox Group wins the war of nerves.";
+  $("#results-verdict").textContent = verdict;
+  $("#results-detail").textContent =
+    `Final reputation: Luxury House ${state.scoreLux} — Fast-Fashion Giant ${state.scoreFF}. ` +
+    `Closing disaster probability sat at ${Math.round(state.disasterProb)}%.`;
+}
+
+function escapeHtml(str) {
+  const d = document.createElement("div");
+  d.textContent = String(str);
+  return d.innerHTML;
+}
+
+$("#btn-join").addEventListener("click", handleJoin);
+$("#btn-local").addEventListener("click", handleLocalSolo);
+$("#btn-again").addEventListener("click", () => location.reload());
+</script>
+
+<!--
+  =========================================================================
+  HOSTING WALKTHROUGH (also explained in the chat response)
+  -------------------------------------------------------------------------
+  This file needs no build step. To let real players join remotely:
+
+  1. Create a free Firebase project at https://console.firebase.google.com
+  2. In the project, open Build > Realtime Database > Create Database
+     (start in test mode for a quick classroom demo; lock down rules
+     before any real/public use — see notes in the chat answer).
+  3. In Project Settings > General > Your apps, add a "Web" app and copy
+     the firebaseConfig object it gives you.
+  4. Paste those values into FIREBASE_CONFIG near the top of the <script>
+     tag above.
+  5. Upload this single HTML file anywhere static files can be served:
+     GitHub Pages, Firebase Hosting, Netlify, or a Replit static site all
+     work with zero server code, because Firebase Realtime Database is
+     itself the "server."
+  6. Share the page URL with players. Whoever opens it first and leaves
+     the room code blank creates a new room and gets a code to share;
+     everyone else pastes that code into "Room code" to join the same
+     match.
+  =========================================================================
+-->
+</body>
+</html>
