@@ -380,8 +380,8 @@
 
   #results {
     display: none;
-    max-width: 480px;
-    margin: 10vh auto;
+    max-width: 640px;
+    margin: 6vh auto;
     padding: 26px;
     background: var(--panel-dark);
     border: 1px solid var(--hairline);
@@ -391,6 +391,12 @@
   #results.visible { display: block; }
   #results h2 { font-family: var(--font-display); font-style: italic; }
   #results .verdict { font-family: var(--font-condensed); text-transform: uppercase; letter-spacing: 0.08em; color: var(--lux-gold); margin-bottom: 12px; }
+
+  #results-chart-wrap { margin: 18px 0 6px; }
+  #results-chart-wrap svg { width: 100%; height: auto; }
+  .chart-legend { display: flex; justify-content: center; gap: 20px; margin-top: 8px; font-family: var(--font-condensed); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; }
+  .chart-legend span { display: inline-flex; align-items: center; gap: 6px; color: var(--text-lo); }
+  .chart-legend .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 
   .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 </style>
@@ -533,6 +539,8 @@
   <h2>Final settlement</h2>
   <div class="verdict" id="results-verdict"></div>
   <p id="results-detail" style="color:var(--text-lo); font-size:0.85rem; line-height:1.6;"></p>
+  <div id="results-chart-wrap"></div>
+  <p id="results-interpretation" style="color:var(--text-lo); font-size:0.8rem; line-height:1.65; text-align:left; margin-top:14px;"></p>
   <button class="btn-primary" id="btn-again" style="margin-top:10px;">Return to lobby</button>
 </section>
 
@@ -843,6 +851,7 @@ function freshState(rounds, autoStart) {
     chanceCard: null,
     log: [{ text: autoStart ? "Negotiation opens. Round 1 begins." : "Room created. Waiting for both seats to be filled…", type: "info", ts: Date.now() }],
     players: {},
+    roundHistory: [],   // one entry per completed round, used to draw the results chart
   };
 }
 
@@ -967,15 +976,29 @@ async function maybeResolve() {
     newLogEntries.push({ text: `Chance Card — ${nextCard.name}: ${nextCard.body}`, type: "chance", ts: Date.now() + 1 });
   }
 
+  const finalScoreLux = s.scoreLux + result.scoreLux + cardScoreLux;
+  const finalScoreFF = s.scoreFF + result.scoreFF + cardScoreFF;
+
+  const historyEntry = {
+    round: s.round,
+    moveLux: m.lux,
+    moveFF: m.ff,
+    scoreLux: finalScoreLux,
+    scoreFF: finalScoreFF,
+    disasterProb: cardProbAfter,
+    disasterOccurred: result.disasterOccurred,
+  };
+
   const patch = {
     status: isLastRound ? "finished" : "playing",
-    scoreLux: s.scoreLux + result.scoreLux + cardScoreLux,
-    scoreFF: s.scoreFF + result.scoreFF + cardScoreFF,
+    scoreLux: finalScoreLux,
+    scoreFF: finalScoreFF,
     disasterProb: cardProbAfter,
     round: isLastRound ? s.round : nextRound,
     chanceCard: nextCard,
     timerEnd: Date.now() + ROUND_SECONDS * 1000,
     log: [...s.log, ...newLogEntries],
+    roundHistory: [...(s.roundHistory || []), historyEntry],
   };
 
   // Transactional write with a guard: only apply if this round hasn't
@@ -1121,14 +1144,17 @@ function renderTimer(state) {
   timerInterval = setInterval(tick, 500);
 }
 
-// If time runs out and a seat you personally control hasn't moved yet,
-// that seat auto-submits Concede — never the opponent's seat, so both
-// clients only ever write their own player's move.
+// If time runs out, any connected browser (either seat, or an observer)
+// auto-submits Concede for whichever seat(s) haven't moved. This used to
+// only cover the seat you personally control, which meant that if one
+// player's tab was ever closed or idle at the timeout moment, their seat's
+// move would never get written and the round would stall forever. Now it's
+// enough for ANY one open tab to be present when the clock hits zero.
 async function autoSubmitOnTimeout(state) {
   const roundKey = "round_" + state.round;
   const m = (state.moves && state.moves[roundKey]) || {};
   for (const seat of ["lux", "ff"]) {
-    if (canControl(seat) && !m[seat]) {
+    if (!m[seat]) {
       await backend.patch({ moves: { [roundKey]: { [seat]: "Concede" } } });
     }
   }
@@ -1147,6 +1173,102 @@ function showResults(state) {
   $("#results-detail").textContent =
     `Final reputation: Luxury House ${state.scoreLux} — Fast-Fashion Giant ${state.scoreFF}. ` +
     `Closing disaster probability sat at ${Math.round(state.disasterProb)}%.`;
+
+  renderResultsChart(state.roundHistory || []);
+  $("#results-interpretation").innerHTML = buildInterpretation(state);
+}
+
+// Draws a simple two-line SVG chart (no external charting library needed)
+// tracking both firms' scores round by round, so the shape of the whole
+// negotiation — not just the final number — is visible at a glance.
+function renderResultsChart(history) {
+  const wrap = $("#results-chart-wrap");
+  if (!history.length) { wrap.innerHTML = ""; return; }
+
+  const W = 560, H = 220, padL = 34, padR = 14, padT = 14, padB = 26;
+  const points = [{ round: 0, scoreLux: 0, scoreFF: 0 }, ...history];
+  const allScores = points.flatMap(p => [p.scoreLux, p.scoreFF]);
+  const minScore = Math.min(0, ...allScores);
+  const maxScore = Math.max(0, ...allScores);
+  const range = Math.max(1, maxScore - minScore);
+
+  const xFor = (i) => padL + (i / (points.length - 1 || 1)) * (W - padL - padR);
+  const yFor = (v) => H - padB - ((v - minScore) / range) * (H - padT - padB);
+
+  const luxPath = points.map((p, i) => `${i === 0 ? "M" : "L"} ${xFor(i).toFixed(1)} ${yFor(p.scoreLux).toFixed(1)}`).join(" ");
+  const ffPath  = points.map((p, i) => `${i === 0 ? "M" : "L"} ${xFor(i).toFixed(1)} ${yFor(p.scoreFF).toFixed(1)}`).join(" ");
+  const zeroY = yFor(0).toFixed(1);
+
+  // Small dots marking any round where mutual disaster struck.
+  const disasterDots = points
+    .map((p, i) => p.disasterOccurred ? `<circle cx="${xFor(i).toFixed(1)}" cy="${yFor(Math.min(p.scoreLux, p.scoreFF)).toFixed(1)}" r="4" fill="var(--disaster-100)" />` : "")
+    .join("");
+
+  const xLabels = points.map((p, i) =>
+    `<text x="${xFor(i).toFixed(1)}" y="${H - 6}" font-size="9" fill="var(--text-lo)" text-anchor="middle" font-family="var(--font-mono)">${i === 0 ? "" : "R" + p.round}</text>`
+  ).join("");
+
+  wrap.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">
+      <line x1="${padL}" y1="${zeroY}" x2="${W - padR}" y2="${zeroY}" stroke="var(--hairline)" stroke-width="1" />
+      <path d="${luxPath}" fill="none" stroke="var(--lux-gold)" stroke-width="2.5" stroke-linejoin="round" />
+      <path d="${ffPath}" fill="none" stroke="var(--ff-orange)" stroke-width="2.5" stroke-linejoin="round" />
+      ${disasterDots}
+      ${xLabels}
+    </svg>
+    <div class="chart-legend">
+      <span><span class="swatch" style="background:var(--lux-gold)"></span>Luxury House</span>
+      <span><span class="swatch" style="background:var(--ff-orange)"></span>Fast-Fashion Giant</span>
+      <span><span class="swatch" style="background:var(--disaster-100)"></span>Disaster round</span>
+    </div>`;
+}
+
+// Plain-language read on how the match actually unfolded, generated from
+// the same round-by-round history the chart draws from — not just the
+// final score, but the shape of the negotiation that produced it.
+function buildInterpretation(state) {
+  const hist = state.roundHistory || [];
+  if (!hist.length) return "";
+
+  const escLux = hist.filter(h => h.moveLux === "Escalate").length;
+  const escFF = hist.filter(h => h.moveFF === "Escalate").length;
+  const conLux = hist.filter(h => h.moveLux === "Concede").length;
+  const conFF = hist.filter(h => h.moveFF === "Concede").length;
+  const sigLux = hist.filter(h => h.moveLux === "Signal").length;
+  const sigFF = hist.filter(h => h.moveFF === "Signal").length;
+  const disasters = hist.filter(h => h.disasterOccurred).length;
+  const peakDisasterProb = Math.max(...hist.map(h => h.disasterProb));
+
+  // Find the single biggest swing in the lead, and which side it favored.
+  let swingRound = null, swingAmount = 0, swingTo = null;
+  let prevDiff = 0;
+  hist.forEach(h => {
+    const diff = h.scoreLux - h.scoreFF;
+    const change = Math.abs(diff - prevDiff);
+    if (change > swingAmount) { swingAmount = change; swingRound = h.round; swingTo = diff > prevDiff ? "Luxury House" : "Fast-Fashion Giant"; }
+    prevDiff = diff;
+  });
+
+  const finalDiff = state.scoreLux - state.scoreFF;
+  const winner = Math.abs(finalDiff) < 5 ? null : (finalDiff > 0 ? "Luxury House" : "Fast-Fashion Giant");
+  const winnerLine = winner
+    ? `<strong>${winner}</strong> comes out ahead, ${Math.abs(finalDiff)} points clear at the close.`
+    : `Neither side pulls ahead — the final gap is only ${Math.abs(finalDiff)} points, close enough to call it a stalemate.`;
+
+  const styleLine = escLux + escFF === 0
+    ? "Neither firm ever escalated — a genuinely cautious negotiation from both sides."
+    : `Luxury House escalated ${escLux}× and conceded ${conLux}× across the match; Fast-Fashion Giant escalated ${escFF}× and conceded ${conFF}×` +
+      (sigLux + sigFF > 0 ? `, with ${sigLux + sigFF} signals sent between them.` : ".");
+
+  const disasterLine = disasters > 0
+    ? `Mutual disaster actually struck ${disasters} time${disasters > 1 ? "s" : ""} — the brink wasn't just threatened, it was crossed.`
+    : `Disaster probability peaked at ${Math.round(peakDisasterProb)}% but never actually triggered — both sides pulled back before it came to that.`;
+
+  const swingLine = swingRound
+    ? `The single biggest turning point was round ${swingRound}, which swung ${swingAmount} points toward ${swingTo}.`
+    : "";
+
+  return [winnerLine, styleLine, disasterLine, swingLine].filter(Boolean).map(l => `<p style="margin:0 0 8px;">${l}</p>`).join("");
 }
 
 function escapeHtml(str) {
