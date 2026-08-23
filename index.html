@@ -478,7 +478,7 @@
 
     <!-- CENTER: round, timer, disaster gauge, chance card -->
     <div class="panel panel-center">
-      <div class="round-tag">Round <b id="round-no">1</b> of <b id="round-total">6</b></div>
+      <div class="round-tag" id="round-tag">Round <b id="round-no">1</b> of <b id="round-total">6</b></div>
       <div id="timer">00:30</div>
 
       <div class="gauge-wrap">
@@ -825,18 +825,23 @@ async function initBackend() {
   }
 }
 
-function freshState(rounds) {
+function freshState(rounds, autoStart) {
+  // autoStart is used only by the solo local-demo mode, where one person
+  // controls both seats and there's no second player to wait for. Every
+  // real online room starts in "waiting" and only moves to "playing"
+  // (which is when the round timer actually starts) once both the Luxury
+  // House and Fast-Fashion Giant seats are filled — see maybeStartGame().
   return {
     round: 1,
     roundTotal: rounds,
-    status: "playing",           // playing | resolving | finished
-    timerEnd: Date.now() + ROUND_SECONDS * 1000,
+    status: autoStart ? "playing" : "waiting",   // waiting | playing | finished
+    timerEnd: autoStart ? Date.now() + ROUND_SECONDS * 1000 : null,
     disasterProb: 10,
     scoreLux: 0,
     scoreFF: 0,
     moves: {},                   // moves["round_1"] = { lux: "Escalate", ff: "Concede" }
     chanceCard: null,
-    log: [{ text: "Negotiation opens. Round 1 begins.", type: "info", ts: Date.now() }],
+    log: [{ text: autoStart ? "Negotiation opens. Round 1 begins." : "Room created. Waiting for both seats to be filled…", type: "info", ts: Date.now() }],
     players: {},
   };
 }
@@ -869,7 +874,7 @@ function handleLocalSolo() {
   myRole = "both"; // special local-only role: control both seats yourself
   roomCode = "LOCAL";
   initBackend().then(async () => {
-    await backend.createRoom(roomCode, freshState(parseInt($("#rounds-input").value, 10)));
+    await backend.createRoom(roomCode, freshState(parseInt($("#rounds-input").value, 10), true));
     await backend.joinRoom(roomCode, { uid, name: myName, role: "both", joinedAt: Date.now() });
     enterGame();
   });
@@ -891,6 +896,31 @@ function enterGame() {
 // Buttons are only clickable for the seat(s) you actually control.
 function canControl(seatRole) {
   return myRole === seatRole || myRole === "both";
+}
+
+// Called after every state change while status is "waiting". Once both a
+// Luxury House player and a Fast-Fashion Giant player are present, one
+// client claims the transition (via a transactional guard, so it can only
+// happen once) and starts Round 1's timer for real.
+async function maybeStartGame() {
+  const s = latestState;
+  if (!s || s.status !== "waiting") return;
+  const roles = Object.values(s.players || {}).map(p => p.role);
+  const hasLux = roles.includes("lux");
+  const hasFF = roles.includes("ff");
+  if (!hasLux || !hasFF) return;
+
+  await backend.patch(
+    {
+      status: "playing",
+      timerEnd: Date.now() + ROUND_SECONDS * 1000,
+      log: [...s.log, { text: "Both seats are filled. Round 1 begins.", type: "info", ts: Date.now() }],
+    },
+    {
+      transactional: true,
+      guard: (current) => current.status === "waiting",
+    }
+  );
 }
 
 async function onMoveClick(seatRole, move) {
@@ -983,6 +1013,10 @@ function onRoomState(state) {
 
   if (state.status === "finished") showResults(state);
 
+  // If we're still in the waiting room, check whether both seats are now
+  // filled and the round should actually begin.
+  maybeStartGame();
+
   // A second player's move might already be sitting in the DB waiting on
   // this client to notice and trigger resolution.
   maybeResolve();
@@ -1053,7 +1087,24 @@ function renderLog(log) {
 
 function renderTimer(state) {
   clearInterval(timerInterval);
+  if (state.status === "waiting") {
+    const roles = Object.values(state.players || {}).map(p => p.role);
+    const missing = [];
+    if (!roles.includes("lux")) missing.push("Luxury House");
+    if (!roles.includes("ff")) missing.push("Fast-Fashion Giant");
+    $("#timer").textContent = "Waiting…";
+    $("#timer").classList.remove("urgent");
+    // Rebuild with the same #round-no/#round-total elements intact, since
+    // onRoomState() looks them up again on every future update.
+    $("#round-tag").innerHTML = (missing.length
+      ? `Waiting on: <b>${missing.join(" & ")}</b> · `
+      : "Starting… ") + `Round <b id="round-no">${Math.min(state.round, state.roundTotal)}</b> of <b id="round-total">${state.roundTotal}</b>`;
+    return;
+  }
   if (state.status !== "playing") { $("#timer").textContent = "--:--"; return; }
+  // Coming from "waiting", #round-tag still has the "Waiting on…" wording —
+  // restore the plain Round X of Y format now that the game has started.
+  $("#round-tag").innerHTML = `Round <b id="round-no">${Math.min(state.round, state.roundTotal)}</b> of <b id="round-total">${state.roundTotal}</b>`;
   const tick = () => {
     const remaining = Math.max(0, Math.round((state.timerEnd - Date.now()) / 1000));
     const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
